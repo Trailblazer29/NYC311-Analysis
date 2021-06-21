@@ -1,0 +1,579 @@
+---
+title: "Mining The 21st Century's Gold From NYC311"
+author: "Ilham Seladji"
+date: 'June 22nd, 2020'
+output:
+  pdf_document:
+    latex_engine: xelatex
+  html_document:
+    df_print: paged
+header-includes: \usepackage{booktabs}
+---
+
+```{r global_options, echo=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+
+```{r echo=FALSE}
+# This chunk is just to make it possible to shrink the typeface in succeeding chunks. Mainly this will be used for the crosstabs.
+def.chunk.hook  <- knitr::knit_hooks$get("chunk")
+knitr::knit_hooks$set(chunk = function(x, options) {
+  x <- def.chunk.hook(x, options)
+  ifelse(options$size != "normalsize", paste0("\\", options$size,"\n\n", x, "\n\n \\normalsize"), x)
+})
+```
+
+
+# I. Introduction
+
+New York City is the most populous city in the United States, with an estimated population of more than 8 million, distributed over about 302.6 square miles (784 km²). This large population has led its government to establish one of the largest and most effective call center services in the world, **NYC311**, to address various problems that citizens might encounter daily in New York City. 
+
+NYC311 was launched in March 2003 and it fields tens of thousands of calls daily, offering information about more than 3,600 topics: *school closings, recycling rules, homeless shelters, park events, pothole repairs... etc*. The service is available 24 hours a day, 7 days a week, 365 days a year, and it has translators on call to handle some 180 different languages. 
+
+NYC311 has a clear mission: providing the public with quick and easy access to all New York City government services and information while offering the best customer service possible.
+
+
+![NYC311 Logo](nyc311.jpg)
+
+
+# II. Context
+
+The 21st century shifted from the industrial revolution to a new economic domination of information technology. Consequently, cities are continuously adapting their government services to the digital era to cope with their problems. 
+
+One example is to give the opportunity to every citizen to make their voice heard by reporting daily problems in the easiest, fastest and most convenient way, through a platform, and make such data open for public use to encourage data-driven problem solving and decision making.
+
+In this report, we will highlight the importance of this digitization and how publicizing digital information can help data scientists to solve some of the hardest problems in the world and make decisions that would otherwise take years of inspection and expertise.
+
+
+
+# III. Data Exploration
+
+```{r initialize, message=FALSE}
+library(tidyverse)
+library(data.table)
+
+nyc311<-fread("311_Service_Requests_from_2010_to_Present.csv")
+population<- fread("NYC_Population_2010_2014.csv")
+mini311<- fread("mini311.csv")
+
+names(nyc311)<-names(nyc311) %>%
+  stringr::str_replace_all("\\s", ".")
+
+```
+
+
+We will come across two different data sets in this report:
+
+  **1. The NYC311 data set:** This is the main data set which gives all information about complaints reported in New York City from 2003 to mid-April 2015. It initially had 9,124,937 complaints characterized by 52 features.
+
+  **2. The Population data set:** This gives the populations of each Borough per year, from 2010 to 2014.
+
+# IV. Data Preprocessing
+
+In order to have neat visualizations and do an accurate analysis with the best complexity possible, we have to clean our data sets following the below steps:
+
+  1. Drop all irrelevant features from the NYC311 data set and keep the most interesting ones, which are: The *Creation* and *Closure Dates* of a complaint, the *Agency* handling it, its *Type*, *Descriptor/Subtype*, *Status* and *Borough*, and the *Latitude* and *Longitude* of the location in which it happened.
+  2. Remove duplicates which might falsify results and increase the spatial and temporal complexities of our script. 
+  3. Population values of each Borough in 2010 are coming from two different sources, we will keep one value for each Borough, which is provided by the same source from which population values have been collected in the remaining years.
+  4. Convert Dates and Times which are given in plain text into a format which parses Dates into Dates and Times, called **POSIXct**.
+  5. Add a new feature to the NYC311 data set, named **Duration**, which contains the time required to process each complaint.
+  6. We will ultimately join the NYC311 with the Population data set. But before, we have to rename the **Geography** feature to **Borough** in the Population data set to match its name in the NYC311 data set.
+  7. Finally, put Borough names in upper case in the Population data set to match their format in the NYC311 data set.
+
+```{r restrict, message=FALSE}
+library(dplyr)
+
+#Select relevant features only
+clean_nyc311 = nyc311 %>%
+  select(Created.Date,
+         Closed.Date,
+         Agency,
+         Complaint.Type,
+         Descriptor,
+         Status,
+         Borough,
+         Latitude,
+         Longitude)
+
+#Drop duplicates
+clean_nyc311 = distinct(clean_nyc311)
+
+population = population[population$`Program Type`=="Postcensal Population Estimate", c("Geography", "Year", "Population")]
+
+```
+
+
+```{r tidy, message = FALSE}
+library(lubridate)
+
+clean_nyc311$Created.Date = mdy_hms(clean_nyc311$Created.Date)
+clean_nyc311$Closed.Date = mdy_hms(clean_nyc311$Closed.Date)
+
+clean_nyc311 = clean_nyc311 %>% mutate(Duration = clean_nyc311$Closed.Date - clean_nyc311$Created.Date) %>% mutate (Year = year(clean_nyc311$Created.Date))
+
+population = population %>% rename(Borough = Geography)
+
+population$Borough = toupper(population$Borough)
+
+```
+
+## What does a Complaint record look like?
+
+In order to make the above words clearer, a sample of each data set is given below:
+
+**1. NYC311:**
+
+```{r tabulate1, size='footnotesize', results="asis"}
+
+library(pander)
+pander(head(na.omit(clean_nyc311)))
+
+```
+
+**2. Population:**
+
+```{r tabulate2, size='footnotesize', results="asis"}
+
+pander(population %>% head(10))
+
+```
+
+# V. Exploration
+
+First, let's explore the NYC311 data set on its own:
+
+## 1. What are NYC311's complaints trends?
+
+```{r complaints_years, message=FALSE}
+
+clean_nyc311 %>% group_by(Year) %>% summarise(count=n()) %>% 
+  ggplot(aes(x=Year, y=count)) +
+  geom_segment( aes(x=Year, xend=Year, y=0, yend=count), color="#716D6D") +
+  geom_point( color="orange", size=2) +
+  theme_light() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.x = element_blank()
+  ) +
+  xlab("Years") +
+  ylab("Number of Complaints")+
+  ggtitle("Complaints Trends") + theme_bw()
+
+```
+
+  - Complaints were very rare between 2003 and 2009, but they increased abruptly in 2010. The obvious reason is that NYC311 was not fully implemented until 2010. In fact, it was not until March 3rd, 2010 that the Federal Chief Information Officer of the United States announced the creation of a uniform Open 311 API that would allow for greater standardization of modern 311 systems across jurisdictions. From then, many cities started to use it to build mobile apps for the 311 service.
+  - The available data shows that the peak was reached in 2014. We cannot say that the number of complaints dropped drastically in 2015, since we only have complaints through mid-April 2015.
+  - In order to do an unbiased and more focused analysis, the NYC311 will be restricted to the most important period with the highest number of complaints (i.e. 2010 to 2014) for the rest of the analysis.
+  
+```{r}
+clean_nyc311 = clean_nyc311[clean_nyc311$Year>=2010 & clean_nyc311$Year<=2014,]
+```
+
+
+## 2. In which period of the year do complaints increase?
+
+```{r}
+
+months = clean_nyc311 %>% mutate(Month = month(Created.Date)) %>%           
+   group_by(Month) %>% summarise(Count=n())                                  
+ months = arrange(months, Month)
+ months$Month = month.abb[months$Month]
+ months %>% ggplot(aes(x=Month,y=Count )) + geom_line(aes(group=1), color = "#BB8FCE") + geom_point(color="#890A51", size=3) + xlab("Months") +
+   scale_x_discrete(limits = months$Month) +                                 
+   scale_y_continuous(labels = scales::comma) +                              
+   ylab("Number of Complaints")+
+   ggtitle("Complaints By Month") + theme_bw()
+
+
+```
+
+More complaints are received in **January** than in any other month of the year. But what are the most common types of complaints which are reported in January?
+
+```{r}
+
+library(treemap)
+
+comp_tp = clean_nyc311[month(clean_nyc311$Created.Date)==1,] %>% group_by(Complaint.Type) %>% summarise(count=n()) %>% arrange(desc(count)) %>% head(10)
+comp_tp %>% treemap(
+            index="Complaint.Type",
+            vSize="count", 
+            title="Most Common Types of Complaints Reported in January",
+            type="index"
+            )
+
+```
+
+As expected, **Heating** complaints are the most common types of complaints in January. Indeed, January is the coldest month of the year in NYC with an average low temperature of 28°F and high of 39°F. Heating complaints shall increase during this month.
+
+## 2. Which Boroughs have the highest number of complaints?
+
+```{r message=FALSE}
+library(packcircles)
+
+data = clean_nyc311 %>% group_by(Borough) %>% summarise(count=n())
+packing <- circleProgressiveLayout(data$count, sizetype='area')
+dataa <- cbind(data, packing)
+dat.gg <- circleLayoutVertices(packing, npoints=50)
+ggplot() + 
+  
+  # Make the bubbles
+  geom_polygon(data = dat.gg, aes(x, y, group = id, fill=as.factor(id)), colour = "black", alpha = 0.6) +
+  
+  # Add text in the center of each bubble + control its size
+  geom_text(data = dataa, aes(x, y, size=count, label = paste0(Borough, " (",count,")"))) +
+  scale_size_continuous(range = c(1,4)) +
+  
+  # General theme:
+  theme_void() + 
+  theme(legend.position="none") +
+  coord_equal()  
+
+```
+
+**Brooklyn** takes the lead when it comes to the number of complaints with 2,098,264 complaints, followed by **Queens** (1,716,011 complaints) and **Manhattan** (1,419,315 complaints).
+
+Let us see if the population of a Borough can affect the number of complaints reported in it.
+
+```{r}
+
+population %>% group_by(Borough) %>% summarise(Population = sum(Population)) %>%
+  ggplot( aes(x=Borough, y=Population)) +
+    geom_bar(stat="identity", fill="#17879A", alpha=.6, width=.4) +
+    xlab("") + 
+    ggtitle("Overall Population Per Borough") +
+    theme_bw()
+
+```
+
+As we can see, **Brooklyn**, **Queens** and **Manhattan** are the most populous Boroughs of NYC. This supports our previous finding. The higher the population, the higher the number of complaints. Generally speaking, big numbers tend to lead to more troubles.
+
+Let's highlight this point a bit more. Suppose we have a 10-Flat residence in which a fire happened. If all 10 flats are occupied, we have twice more chances to receive complaints than if 5 flats only were occupied. 
+
+This explains why NYC311 should get prepared to work more with populous Boroughs.
+
+But, this says that the most populous Boroughs are expected to have the highest number of complaints, and that is true. But can any random Borough have a biggest complaint rate (Number of complaints per capita) than the most populous Borough?
+
+```{r, message=FALSE}
+
+borough_count = clean_nyc311[clean_nyc311$Borough!="Unspecified",] %>% group_by(Borough) %>% summarise(count=n()) 
+pander(population %>% group_by(Borough) %>% summarise(Population = sum(Population)) %>% mutate(Complaints = borough_count$count) %>% mutate(Rate = Complaints/Population))
+
+```
+
+**Manhattan** seems to have the highest complaint rate, followed by **Staten Island** and **Bronx**. **Brooklyn** and **Queens**, which are the most populous Boroughs with the highest number of complaints, happen to have a better complaint rate than other Boroughs.
+
+A per capita study allows for a more correct analysis.
+
+## 3. Which Complaint Types are the most frequent within the data set?
+
+```{r message=FALSE, warning=FALSE}
+
+bigComplaints = clean_nyc311 %>%
+  group_by(Complaint.Type) %>%
+  summarize(count=n())
+
+bigComplaints=head(bigComplaints[order(bigComplaints$count, decreasing=TRUE),], 10)
+bigComplaints$Complaint.Type=factor(bigComplaints$Complaint.Type,
+  levels=bigComplaints$Complaint.Type[order(bigComplaints$count)])
+ggplot(bigComplaints, aes(x=Complaint.Type,y=count)) +
+   geom_bar(stat="identity", fill="#CD6155") +
+   labs(x = 'Complaint Type', 
+        y = 'Count', 
+        title = "Most Frequent Complaints") +
+  coord_flip() + theme_bw()
+
+```
+
+**Heating**, **Street Light Condition** and **Street Condition** are the three most common types of complaints. In which Boroughs are they frequent?
+
+```{r crosstabs, size='footnotesize'}
+
+xtabA<-dplyr::filter(clean_nyc311,
+  Complaint.Type=="HEATING"|
+  Complaint.Type=="Street Condition"|
+  Complaint.Type=="Street Light Condition") 
+
+xtabA = xtabA[xtabA$Borough!="Unspecified",] 
+
+xtabB<-select(xtabA,Borough,Complaint.Type) 
+
+library(gmodels)   
+
+p<-table(xtabB$Borough, xtabB$Complaint.Type)  
+
+ggplot(as.data.frame(p))+                                                   
+geom_tile(aes(x=Var1,y=Var2,fill=Freq))+                                  
+scale_fill_viridis_c()+                                                   
+theme(axis.text.x = element_text(angle=30,hjust=1))+                      
+xlab("Boroughs")+ylab("Complaint Types")+labs(fill="percent")
+
+```
+
+*"Heating"* complaints are more frequent in **Brooklyn** and *"Street Condition"* and *"Street Light Condition"* complaints are more frequent in **Queens**.
+
+## 4. What are the Biggest Agencies (i.e. Agencies which have received more than 1000 complaints?)
+
+```{r explore, message=FALSE}
+bigAgency <- clean_nyc311 %>%
+  group_by(Agency) %>%
+  summarize(count=n()) %>%
+  filter(count>1000)
+bigAgency$Agency<-factor(bigAgency$Agency,
+  levels=bigAgency$Agency[order(bigAgency$count)])
+p<-ggplot(bigAgency,aes(x=Agency,y=count)) +
+   geom_bar(stat="identity", fill="#27AE60") +
+   coord_flip() + ggtitle("Agencies with +1000 Complaints") + theme_bw()
+p
+```
+
+21 agencies have received more than 1000 complaints. *"New York City Department of Housing Preservation and Development (HPD)"* is the most targeted agency by complaints, followed by *"New York City Department of Transportation (DOT)"* and then *"New York City Police Department (NYPD)"* on the podium. 
+
+## 5. Is there a relationship between the most common types of complaints and the biggest agencies?
+
+Let's see what kinds of complaints **HPD**, **DOT** and **NYPD** handle.
+
+```{r}
+
+agency_complaint = filter(clean_nyc311,
+  Agency=="HPD"|
+  Agency=="DOT" |
+  Agency=="NYPD") %>%
+group_by(Agency, Complaint.Type) %>% summarize(count=n()) 
+hpd = filter(agency_complaint, Agency=="HPD") %>% arrange(desc(count)) %>% head(3)
+dot = filter(agency_complaint, Agency=="DOT") %>% arrange(desc(count)) %>% head(3)
+nypd = filter(agency_complaint, Agency=="NYPD") %>% arrange(desc(count)) %>% head(3)
+agency_complaint = rbind(hpd, dot, nypd)
+ggplot(agency_complaint, aes(x=Complaint.Type,y=count)) +
+   geom_bar(stat="identity", fill ="#16A085") + facet_grid(Agency ~ .) +
+   xlab("Complaint Types") + ylab("Number of Complaints") +
+   coord_flip() + ggtitle("Most Common Complaint Types Handled By The 3 Giants") + theme_bw()
+
+```
+
+  - **Heating** complaints, which are the most common types of complaints are handled by the biggest agency, **HPD**.
+  - **Street Light Condition** and **Street Condition** complaints, which are the second and third most common types of complaints are handled by the second biggest agency **DOT**.
+  - We can see that there is a relationship between agencies and complaint types. The most common complaint types are handled by the biggest agencies. That was expected. If you say that an agency receives a lot of complaints and at the same time there is a type of complaints which is more frequent than other types, then there should be a chance that the most frequent complaints are handled by the agency which deals with the biggest number of complaints.
+
+## 6. How much time on average does it take the biggest agencies to process a complaint and close it?
+
+```{r processing_time, message=FALSE}
+
+library(lubridate)
+#Select the Creation and Closing dates of Closed complaints
+dates = clean_nyc311[clean_nyc311$Status == "Closed",1:2]
+
+#Calculate the processing time of each Closed complaint
+processingTime = dates$Closed.Date - dates$Created.Date
+
+#Average processing time in days
+average = mean(processingTime, na.rm = TRUE)/(60*60*24)
+
+```
+
+
+A complaint gets closed after 15 days on average. This result does not reflect the whole performance of NYC311 since it takes different agencies and different complaint types into consideration. 
+
+Instead, let's have a look at the average processing time of each big agency separately:
+
+
+```{r, message=FALSE}
+#Selecting closed complaints of big agencies
+agencies = clean_nyc311[clean_nyc311$Agency %in% bigAgency$Agency & clean_nyc311$Status == "Closed", 1:3]
+
+#Their processing times
+processingTime = agencies$Closed.Date-agencies$Created.Date
+
+agencies = na.omit(data.frame(agencies$Agency, processingTime))
+
+agencies = agencies %>% rename(Agency = agencies.Agency)
+processingTimes = aggregate(agencies$processingTime, list(agencies$Agency), mean)
+processingTimes = processingTimes %>% rename(Agency = Group.1, a_mean = x)
+processingTimes$a_mean = processingTimes$a_mean / (60*60)
+processingTimes$a_mean = processingTimes$a_mean[order(processingTimes$a_mean, decreasing = TRUE)]
+
+#Plotting
+ggplot(processingTimes, aes(x=Agency, y=a_mean)) +
+   geom_bar(stat = "identity", fill = "#FF5733") +
+   labs(x = "Agency", 
+        y = "Average Processing Time", 
+        title = "Biggest Agencies' Processing Times") +
+   coord_flip() + theme_bw()
+
+```
+
+**New York City Taxi and Limousine Commission (TLC)**, **New York City Police Department (NYPD)** and the **Human Resources Administration (HRA)** have the fastest services. Their complaints are solved almost immediately (after 45.8s, 2m12s and 3h40m respectively, on average). On another hand, **3-1-1**, **New York City Department of Consumer Affairs (DCA)** and **New York City Department of Environmental Protection (DEP)** have the slowest services amongst big agencies (it takes them approximately 64 days, 56 days and 51 days respectively on average to solve a complaint). 
+
+**TLC** and **NYPD** have easy and urgent cases respectively, thus, they ought to deliver very fast services. On another hand, **DCA** and **DEP** generally treat time-consuming and non-urgent cases.
+
+
+## 7. How are *"Noise"* complaints spread in NYC?
+
+We are going to use a sample of 10,000 complaints in this part.
+
+```{r selection}
+#Extract the Latitude & Longitude values of the "Noise" complaints
+coord = mini311[mini311$Complaint.Type=="Noise", 9:10]
+```
+
+```{r, message=FALSE}
+noiseComp = mini311[mini311$Complaint.Type=="Noise"]
+noiseComp = noiseComp %>% group_by(Borough) %>% summarize(count=n())
+pie(noiseComp$count, labels = noiseComp$Borough, main = "Noise Complaints by Borough")
+```
+
+According to the above pie chart, **"Manhattan"** is the noisiest borough. The following map confirms our findings:
+
+```{r generatemap, message=FALSE}
+ library(ggmap)
+ key <- "AIzaSyD4HbC9B0fPS8ZohLsWFc4YIegEueKWHe4"
+ register_google(key=key)
+ nyc_map <- get_map(location=c(lon=-73.9,lat=40.75), maptype="terrain",zoom=11)
+ map <- ggmap(nyc_map) +
+   geom_point(data=coord,aes(x=Longitude,y=Latitude),
+ 	     size=0.6,alpha=0.3,color="red") +
+   ggtitle("Map of Noise Complaints in NYC") +
+   theme(plot.title=element_text(hjust=0.5))
+ map
+ 
+```
+
+
+As we can see, most **Noise** complaints are centered in Manhattan.
+
+
+**But, in which time of the day do Noise complaints increase in Manhattan?**
+
+```{r, message=FALSE}
+manh_noise = clean_nyc311[clean_nyc311$Borough=="MANHATTAN" & grepl("Noise",clean_nyc311$Complaint.Type,fixed=TRUE),]
+
+manh_noise = manh_noise %>% select (Created.Date, Borough, Complaint.Type) %>% group_by(hour(Created.Date)) %>% summarise(count=n())
+
+manh_noise = manh_noise %>% rename(hour = 'hour(Created.Date)')
+working = manh_noise[manh_noise$hour>=7 & manh_noise$hour<=22,]
+non_working = manh_noise[!manh_noise$hour %in% working$hour,]
+
+cloud = data.frame(Slot = c("Noisy Hours", "Quiet Hours"), count = c(mean(working$count), mean(non_working$count)))
+
+# Compute percentages
+cloud$fraction = cloud$count / sum(cloud$count)
+
+# Compute the cumulative percentages (top of each rectangle)
+cloud$ymax = cumsum(cloud$fraction)
+
+# Compute the bottom of each rectangle
+cloud$ymin = c(0, head(cloud$ymax, n=-1))
+ 
+# Make the plot
+ggplot(cloud, aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill=Slot)) +
+     geom_rect() +
+     theme_bw() +
+     coord_polar(theta="y") +
+     xlim(c(2, 4)) 
+
+```
+
+Since the noise ordinance in NYC permits less noise between 10PM and 7AM, what we call *Quiet Hours*, then it is totally logical that noise complaints would increase during *Quiet Hours*. *Noisy Hours* receive less noise complaints, since noise is more tolerated during *Noisy Hours*, and this is confirmed in the above doughnut plot.   
+
+**What is the main source of Manhattan's noise?**
+
+```{r}
+
+noise = clean_nyc311[clean_nyc311$Borough=="MANHATTAN" & grepl("Noise",clean_nyc311$Complaint.Type), ] %>% group_by(Descriptor) %>% summarise(count=n())
+ggplot(noise, aes(x=Descriptor, y=count)) +
+    geom_bar(stat="identity", fill="#F76705") +
+    ggtitle("Types of Noise Complaints") +
+    theme_bw() + coord_flip()
+
+```
+
+The big majority of Manhattan's noise complaints concern *Loud Music/Party* noises, followed by *Construction Before/After Working Hours*. This supports our previous claim: *Non-Working hours* are part of *Quiet Hours*, that's why complaints increase during *Quiet Hours*.
+
+## 8. Are complaint rates the same in weekdays as in weekends?
+
+```{r}
+
+days = clean_nyc311 %>% mutate(Days = weekdays(Created.Date)) %>% group_by(Days) %>% summarise(count=n()) 
+days = arrange(days, Days)
+days %>% ggplot(aes(x=Days, y=count, fill = Days)) + geom_bar(stat = "identity") + xlab("Days") +
+  ylab("Number of Complaints")+
+  ggtitle("Complaints By Day") + theme_bw()
+
+```
+
+Complaints drop drastically during weekends (Saturday & Sunday). Indeed, some types of complaints such as **Transportation**, **School-related** and **Construction** complaints are not expected to be reported during weekends.
+
+# V. Conclusion
+
+The NYC311 is a great source of knowledge. Complaints say a lot about the challenges facing Boroughs, the most well-performing agencies, the behavior of citizens in different months of the year and different days of the week and endless other insights that we can draw from different perspectives.
+
+For instance, our analysis has led us to the following points:
+
+  1. More data leads to a better analysis. Indeed, we have analyzed complaints which happened between 2010 and 2014 when we discovered that, due to the partial implementation of the 311 service, some years were missing a lot of data, which might lead to false conclusions.
+  2. Some kinds of complaints reach the peak in some periods and then become less famous the rest of the time. These kinds of complaints, which are specific to a certain period, should be expected and prepared for to be treated in a timely manner.
+  3. The most populous areas receive the biggest number of complaints. However, they do not necessarily have the biggest complaint rate.
+  4. The biggest agencies in terms of the number of resolved complaints do not necessarily reflect their efficiency, as the average processing time of a complaint should be taken into consideration as well.
+  5. Some complaints require more time to be processed than others. The fact that an agency takes more time to solve its complaints than other agencies does not necessarily mean that it has a weaker performance.
+  6. We can think that the highest number of noise-related complaints are received during the noisiest hours of the day. In fact, it might be the opposite, since noise is supposed to be made during noisy hours, but it should be reported and complained about during quiet hours.
+  7. Noise complaints subtypes in a Borough can give an idea about whether a Borough is good to be lived in or not. For instance, quiet people may refuse to live in Manhattan.
+  8. Complaints increase during weekdays and decrease during weekends. More troubles are associated to work/school.
+
+Things NYC311 should consider changing: 
+
+  1. Complaints should be clustered according to their level of difficulty. Complex complaints need to be treated aside because they might affect numbers in terms of agency performance.
+  2. As mentioned in part 2, the same complaint can be reported by many people at once. NYC311 should detect duplicate complaints before saving them to ease the preprocessing task.
+  3. Tidying such a massive data set takes time and requires great processing resources. In order to ease it, NYC311 can at least try to avoid NAs by using several means such as reverse Geocoding to fill in missing Boroughs. Values need to be controlled before entering the system to avoid infelicities.
+  4. The database skeleton needs to be revised. Features which characterize 5% of the whole complaints need not stay in the database.
+  
+# VII. Appendix
+
+The following Data Dictionary defines each feature which has been used to mine information from the NYC311 data set in this project:
+
+```{r dictionary, message=FALSE}
+
+columns = c("Created Date", "Closed Date", "Agency", "Complaint Type", "Descriptor", "Status", "Borough", "Latitude", "Longitude", "Population" )
+
+descriptions = c("Date Service Request was created", 
+       "Date Service Request was closed by responding agency", 
+       "Acronym of responding City Government Agency",
+       "This is the first level of a hierarchy identifying the topic of the incident or condition. Complaint Type may have a corresponding Descriptor or may stand alone", 
+       "This is associated to the Complaint Type, and provides further detail on the incident or condition. Descriptor values are dependent on the Complaint Type, and are not always required in Service Requests",
+       "Status of Service Request submitted", 
+       "Provided by the submitter and confirmed by geovalidation. Boroughs can have five possible values: Bronx, Brooklyn, Manhattan, Queens, Staten Island",
+       "Geo based Latitude of the incident location",
+       "Geo based Longitude of the incident location",
+       "Population of the Borough where the incident happened, in the year it happened")
+
+types = c("Date & Time",
+       "Date & Time",
+       "Plain Text",
+       "Plain Text",
+       "Plain Text",
+       "Plain Text",
+       "Plain Text",
+       "Number",
+       "Number",
+       "Number")
+
+examples = c("04/14/2015 02:14:40 AM", "04/14/2015 03:03:22 AM", "NYPD", "Illegal Parking", "Blocked Sidewalk","Closed","BROOKLYN", "40.82573", "-73.82111","2,602,680")
+
+#Table Header
+h1 = "Field Name"
+h2 = "Description"
+h3 = "Type"
+h4 = "Example"
+
+dictionary = data.frame(columns, descriptions, types, examples, stringsAsFactors=FALSE)
+names(dictionary) = c(h1, h2, h3, h4)
+library(kableExtra)
+knitr::kable(dictionary) %>%
+          kable_styling(font_size=9) %>%
+          column_spec(2,width="3in")
+
+```
+
+
+
+
+
